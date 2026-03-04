@@ -1,0 +1,25 @@
+version: '3'
+
+vars:
+  LOCAL_BIN: "{{.PWD}}/bin"
+
+dotenv:
+  - '.env'
+
+tasks:
+  install_deps:
+    desc: "Установка утилит"
+    cmds:
+      - "GOBIN={{.LOCAL_BIN}} go install github.com/pressly/goose/v3/cmd/goose@v3.14.0"
+
+  local_migration_status:
+    cmds:
+      - "{{.LOCAL_BIN}}/goose -dir {{.LOCAL_MIGRATION_DIR}} postgres {{.LOCAL_MIGRATION_DSN}} status -v"
+
+  local_migration_up:
+    cmds:
+      - "{{.LOCAL_BIN}}/goose -dir {{.LOCAL_MIGRATION_DIR}} postgres {{.LOCAL_MIGRATION_DSN}} up -v"
+
+  local_migration_down:
+    cmds:
+      - "{{.LOCAL_BIN}}/goose -dir {{.LOCAL_MIGRATION_DIR}} postgres {{.LOCAL_MIGRATION_DSN}} down -v"
