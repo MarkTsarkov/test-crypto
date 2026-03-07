@@ -2,104 +2,86 @@ package service
 
 import (
 	"context"
-	"log"
-	"sync"
-	"time"
-
+	"github.com/google/uuid"
+	"github.com/marktsarkov/test/errs"
 	"github.com/marktsarkov/test/model"
 	"github.com/marktsarkov/test/repo"
+	"github.com/marktsarkov/test/txManager"
 )
 
 type service struct {
-	repo         repo.Irepo
-	clicksCh     chan model.Click
-	sendClicksCh chan map[model.Click]int
-	mu           *sync.Mutex
+	repo repo.Irepo
+	tx   txManager.TxManager
 }
 
-func NewService(repo repo.Irepo) Iservice {
-	clicksCh := make(chan model.Click, 5000)
-	sendClicksCh := make(chan map[model.Click]int)
-	m := &sync.Mutex{}
+func NewService(repo repo.Irepo, tx txManager.TxManager) Iservice {
 	return &service{
-		repo:         repo,
-		clicksCh:     clicksCh,
-		sendClicksCh: sendClicksCh,
-		mu:           m,
+		repo: repo,
+		tx:   tx,
 	}
-
 }
 
-func (s *service) SaveClick(bannerID int) error {
-	go func() {
-		click := model.Click{}
-		click.BannerID = bannerID
-		click.Ts = time.Now().Truncate(time.Minute)
-		s.clicksCh <- click
-	}()
-	return nil
-}
-func (s *service) ParallelSender(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
-	clicks := make(map[model.Click]int, 100)
+func (s *service) CreateWithdrawal(ctx context.Context, withdrawal *model.Withdrawal) (*model.Withdrawal, []byte, error) {
+	var result *model.Withdrawal
+	var oldResponse []byte
+	err := s.tx.WithTx(ctx, func(ctx context.Context) (err error) {
 
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.mu.Lock()
-				s.send(ctx, clicks)
-				clicks = make(map[model.Click]int, 100)
-				s.mu.Unlock()
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case click := <-s.clicksCh:
-				s.mu.Lock()
-				clicks[click]++
-				s.mu.Unlock()
-			case <-ctx.Done():
-				return
-
-			}
-		}
-	}()
-}
-
-func (s *service) send(ctx context.Context, clicks map[model.Click]int) {
-	if len(clicks) > 0 {
-		err := s.repo.SaveClicks(ctx, clicks)
+		//lock idempotencyKey
+		err = s.repo.LockIdempotency(ctx, withdrawal.IdempotencyKey, withdrawal.UserID)
 		if err != nil {
-			log.Printf("failed to save clicks in sender: %v\nclicks: %v", err, clicks)
+			return err
 		}
-		for click, count := range clicks {
-			log.Printf("sent clicks: %v %v", click.BannerID, count)
+		//checkIdempotency and payload
+		oldResponse, err = s.repo.CheckIdempotency(ctx, withdrawal)
+		if err != nil {
+			return err
 		}
-	} else {
-		log.Printf("nothing to send")
+		if oldResponse != nil {
+			return nil
+		}
+		//checkBalance
+		userBalance, err := s.repo.CheckBalance(ctx, withdrawal)
+		if err != nil {
+			return err
+		}
+		networkFee := 1 //захардкодил значение, чтобы не писать логику проверки комиссии сети
+		operationNeeded := withdrawal.Amount + networkFee
+		if operationNeeded > userBalance {
+			return errs.ErrPureBalance
+		}
+		//createOrder
+		result, err = s.repo.CreateWithdrawal(ctx, withdrawal)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-	return
+	return result, oldResponse, nil
 }
 
-func (s *service) Close(ctx context.Context) {
-	select {
-	case <-ctx.Done():
-		close(s.clicksCh)
-	default:
-	}
-}
-
-func (s *service) GetStats(ctx context.Context, bannerID int, tsFrom, tsTo time.Time) (data []model.ClickStat, err error) {
-	data, err = s.repo.GetStats(ctx, bannerID, tsFrom, tsTo)
+func (s *service) GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]model.Withdrawal, error) {
+	result, err := s.repo.GetWithdrawals(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	return data, nil
+	return result, nil
+}
+
+func (s *service) ConfirmWithdrawal(ctx context.Context, operationID uuid.UUID) (*model.Withdrawal, error) {
+	result, err := s.repo.ConfirmWithdrawal(ctx, operationID)
+	//TODO: create row in ledger
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *service) SaveResponse(ctx context.Context, response []byte, withdrawal *model.Withdrawal) error {
+	err := s.repo.SaveResponse(ctx, response, withdrawal)
+	if err != nil {
+		return err
+	}
 }
