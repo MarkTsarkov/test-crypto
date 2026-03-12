@@ -21,7 +21,7 @@ func AuthMiddleware(c *fiber.Ctx) error {
 	}
 
 	token := strings.TrimPrefix(auth, prefix)
-	userToken := os.Getenv("USER_TOKEN") //чтобы не ходить за настоящим токеном
+	userToken := strings.TrimPrefix(os.Getenv("USER_TOKEN"), prefix) //чтобы не ходить за настоящим токеном
 	if subtle.ConstantTimeCompare([]byte(token), []byte(userToken)) == 0 {
 		return c.Status(fiber.StatusUnauthorized).SendString("invalid token")
 	}

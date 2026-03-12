@@ -18,6 +18,7 @@ type Irepo interface {
 	CheckBalance(ctx context.Context, withdrawal *model.Withdrawal) (int, error)
 
 	SaveResponse(ctx context.Context, response []byte, withdrawal *model.Withdrawal) error
+	SaveLedger(ctx context.Context, operationID uuid.UUID) error
 }
 
 type DBTX interface {

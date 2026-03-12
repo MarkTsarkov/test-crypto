@@ -91,7 +91,7 @@ func (r *repo) CheckIdempotency(ctx context.Context, withdrawal *model.Withdrawa
 func (r *repo) CheckBalance(ctx context.Context, withdrawal *model.Withdrawal) (int, error) {
 	db, err := getDB(ctx)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	var userBalance int
 	err = db.QueryRow(ctx, `SELECT amount 
@@ -189,6 +189,21 @@ func (r *repo) ConfirmWithdrawal(ctx context.Context, operationID uuid.UUID) (*m
 
 	result.OperationID = opID
 	return result, nil
+}
+
+func (r *repo) SaveLedger(ctx context.Context, operationID uuid.UUID) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO ledger_entries (operation_id, user_id, amount, currency)
+		 SELECT operation_id, user_id, amount, currency
+		 FROM withdrawals
+		 WHERE operation_id = $1`,
+		operationID,
+	)
+	if err != nil {
+		logger.Fail("error: ", err)
+		return err
+	}
+	return nil
 }
 
 func getDB(ctx context.Context) (DBTX, error) {

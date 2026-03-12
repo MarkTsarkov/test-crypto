@@ -72,7 +72,10 @@ func (s *service) GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]model
 
 func (s *service) ConfirmWithdrawal(ctx context.Context, operationID uuid.UUID) (*model.Withdrawal, error) {
 	result, err := s.repo.ConfirmWithdrawal(ctx, operationID)
-	//TODO: create row in ledger
+	if err != nil {
+		return nil, err
+	}
+	err = s.repo.SaveLedger(ctx, operationID)
 	if err != nil {
 		return result, err
 	}
@@ -84,4 +87,5 @@ func (s *service) SaveResponse(ctx context.Context, response []byte, withdrawal 
 	if err != nil {
 		return err
 	}
+	return nil
 }

@@ -17,6 +17,21 @@ import (
 	"github.com/marktsarkov/test/service"
 )
 
+// createWithdrawal godoc
+// @Summary      Create withdrawal
+// @Description  Creates a new crypto withdrawal. Idempotent: repeated requests with the same key and body return the cached response.
+// @Tags         withdrawals
+// @Accept       json
+// @Produce      json
+// @Param        Idempotency-Key  header    string              true  "Idempotency key (UUID v4)"  example(550e8400-e29b-41d4-a716-446655440000)
+// @Param        request          body      WithdrawalRequest   true  "Withdrawal payload"
+// @Success      200              {object}  WithdrawalResponse
+// @Failure      400              {object}  ErrorResponse
+// @Failure      409              {object}  ErrorResponse       "Insufficient balance"
+// @Failure      422              {object}  ErrorResponse       "Idempotency key reused with different body"
+// @Failure      500              {object}  ErrorResponse
+// @Security     BearerAuth
+// @Router       /withdrawals [post]
 func createWithdrawal(service service.Iservice, validator *validator.Validate) func(c *fiber.Ctx) error {
 	return func(c *fiber.Ctx) error {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -87,6 +102,19 @@ func createWithdrawal(service service.Iservice, validator *validator.Validate) f
 	}
 }
 
+// confirmWithdrawal godoc
+// @Summary      Confirm withdrawal
+// @Description  Transitions a pending withdrawal to the complete state and writes a ledger entry.
+// @Tags         withdrawals
+// @Produce      json
+// @Param        id   path      string                    true  "Operation ID (UUID, returned from POST /withdrawals)"  example(550e8400-e29b-41d4-a716-446655440001)
+// @Success      200  {object}  ConfirmWithdrawalResponse
+// @Failure      400  {object}  ErrorResponse
+// @Failure      404  {object}  ErrorResponse             "Withdrawal not found"
+// @Failure      409  {object}  ErrorResponse             "Withdrawal is not in pending status"
+// @Failure      500  {object}  ErrorResponse
+// @Security     BearerAuth
+// @Router       /withdrawals/{id}/confirm [post]
 func confirmWithdrawal(service service.Iservice) func(c *fiber.Ctx) error {
 	return func(c *fiber.Ctx) error {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
@@ -115,6 +143,17 @@ func confirmWithdrawal(service service.Iservice) func(c *fiber.Ctx) error {
 	}
 }
 
+// getWithdrawal godoc
+// @Summary      Get withdrawals
+// @Description  Returns all withdrawals for the given user.
+// @Tags         withdrawals
+// @Produce      json
+// @Param        id   path      string               true  "User ID (UUID)"  example(12345678-1234-4123-b234-123456789012)
+// @Success      200  {array}   WithdrawalResponse
+// @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  ErrorResponse
+// @Security     BearerAuth
+// @Router       /withdrawals/{id} [get]
 func getWithdrawal(service service.Iservice) func(c *fiber.Ctx) error {
 	return func(c *fiber.Ctx) error {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
