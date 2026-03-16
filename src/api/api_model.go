@@ -1,6 +1,8 @@
 package api
 
 import (
+	"time"
+
 	"github.com/marktsarkov/test/model"
 )
 
@@ -17,9 +19,12 @@ type WithdrawalRequest struct {
 }
 
 type WithdrawalResponse struct {
-	WithdrawalID   string `json:"withdrawal_id"`
-	UserID         string `json:"user_id"`
-	IdempotencyKey string `json:"idempotency_key"`
+	WithdrawalID   string    `json:"withdrawal_id"`
+	UserID         string    `json:"user_id"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	Amount         int       `json:"amount,omitzero"`
+	Status         string    `json:"status,omitzero"`
+	CreatedAt      time.Time `json:"created_at,omitzero"`
 }
 
 func withdrawalToResponse(response model.Withdrawal) WithdrawalResponse {
@@ -27,6 +32,9 @@ func withdrawalToResponse(response model.Withdrawal) WithdrawalResponse {
 		WithdrawalID:   response.OperationID.String(),
 		UserID:         response.UserID.String(),
 		IdempotencyKey: response.IdempotencyKey.String(),
+		Amount:         response.Amount,
+		Status:         response.Status,
+		CreatedAt:      response.CreatedAt,
 	}
 }
 

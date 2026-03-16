@@ -1,6 +1,8 @@
 package model
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 )
 
@@ -13,4 +15,5 @@ type Withdrawal struct {
 	Status         string
 	IdempotencyKey uuid.UUID
 	HashedBody     string
+	CreatedAt      time.Time
 }

@@ -48,7 +48,6 @@ func (r *repo) CheckIdempotency(ctx context.Context, withdrawal *model.Withdrawa
 
 	var status string
 	var storedHash string
-	var code int
 	var response []byte
 
 	key := withdrawal.IdempotencyKey.String()
@@ -56,12 +55,12 @@ func (r *repo) CheckIdempotency(ctx context.Context, withdrawal *model.Withdrawa
 	hash := withdrawal.HashedBody
 
 	err = db.QueryRow(ctx,
-		`SELECT status, request_hash, response, status_code 
+		`SELECT status, request_hash, response 
 			 FROM idempotency_keys
 			 WHERE key=$1 AND user_id=$2
 			 FOR UPDATE`,
 		withdrawal.IdempotencyKey.String(), withdrawal.UserID.String(),
-	).Scan(&status, &storedHash, &response, &code)
+	).Scan(&status, &storedHash, &response)
 
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		logger.Fail("error: ", err)
@@ -106,7 +105,7 @@ func (r *repo) CheckBalance(ctx context.Context, withdrawal *model.Withdrawal) (
 }
 
 func (r *repo) CreateWithdrawal(ctx context.Context, w *model.Withdrawal) (*model.Withdrawal, error) {
-	var result *model.Withdrawal
+	var result model.Withdrawal
 	var operationID uuid.UUID
 
 	db, err := getDB(ctx)
@@ -125,7 +124,7 @@ func (r *repo) CreateWithdrawal(ctx context.Context, w *model.Withdrawal) (*mode
 	}
 
 	result.OperationID = operationID
-	return result, nil
+	return &result, nil
 }
 
 func (r *repo) SaveResponse(ctx context.Context, response []byte, withdrawal *model.Withdrawal) error {
@@ -142,7 +141,7 @@ func (r *repo) SaveResponse(ctx context.Context, response []byte, withdrawal *mo
 
 func (r *repo) GetWithdrawals(ctx context.Context, id uuid.UUID) ([]model.Withdrawal, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT operation_id, user_id, amount, currency, destination, idempotency_key
+		`SELECT operation_id, user_id, amount, currency, destination, idempotency_key, status, created_at
 		 FROM withdrawals
 		 WHERE user_id = $1`,
 		id,
@@ -156,7 +155,7 @@ func (r *repo) GetWithdrawals(ctx context.Context, id uuid.UUID) ([]model.Withdr
 	for rows.Next() {
 		var w model.Withdrawal
 		var operationID uuid.UUID
-		if err := rows.Scan(&operationID, &w.UserID, &w.Amount, &w.Currency, &w.Destination, &w.IdempotencyKey); err != nil {
+		if err := rows.Scan(&operationID, &w.UserID, &w.Amount, &w.Currency, &w.Destination, &w.IdempotencyKey, &w.Status, &w.CreatedAt); err != nil {
 			return nil, err
 		}
 		w.OperationID = operationID
@@ -170,7 +169,7 @@ func (r *repo) GetWithdrawals(ctx context.Context, id uuid.UUID) ([]model.Withdr
 }
 
 func (r *repo) ConfirmWithdrawal(ctx context.Context, operationID uuid.UUID) (*model.Withdrawal, error) {
-	var result *model.Withdrawal
+	result := &model.Withdrawal{}
 	var opID uuid.UUID
 
 	err := r.db.QueryRow(ctx,
