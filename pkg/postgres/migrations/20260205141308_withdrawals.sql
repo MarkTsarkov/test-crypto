@@ -31,7 +31,14 @@ CREATE TABLE withdrawals (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE ledger_entries ()
+CREATE TABLE ledger_entries (
+    id           SERIAL PRIMARY KEY,
+    operation_id UUID        NOT NULL REFERENCES withdrawals (operation_id),
+    user_id      UUID        NOT NULL,
+    amount       INT         NOT NULL,
+    currency     TEXT        NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 INSERT INTO users_balances (user_id, currency, amount)
 VALUES ('12345678-1234-4123-b234-123456789012', 'USDT', 1000);
@@ -39,6 +46,7 @@ VALUES ('12345678-1234-4123-b234-123456789012', 'USDT', 1000);
 
 -- +goose Down
 -- +goose StatementBegin
+DROP TABLE ledger_entries;
 DROP TABLE withdrawals;
 DROP TABLE idempotency_keys;
 DROP TABLE users_balances;

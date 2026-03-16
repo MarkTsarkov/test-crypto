@@ -1,0 +1,118 @@
+{
+  "info": {
+    "name": "Crypto Withdrawal API",
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{user_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "user_id",
+      "value": "12345678-1234-4123-b234-123456789012"
+    },
+    {
+      "key": "withdrawal_id",
+      "value": ""
+    },
+    {
+      "key": "idempotency_key",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Create Withdrawal",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Auto-generate UUID v4 for Idempotency-Key",
+              "function uuidv4() {",
+              "    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {",
+              "        var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);",
+              "        return v.toString(16);",
+              "    });",
+              "}",
+              "pm.collectionVariables.set('idempotency_key', uuidv4());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "    const json = pm.response.json();",
+              "    pm.collectionVariables.set('withdrawal_id', json.withdrawal_id);",
+              "    pm.collectionVariables.set('user_id', json.user_id);",
+              "    console.log('withdrawal_id saved:', json.withdrawal_id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Idempotency-Key",
+            "value": "{{idempotency_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"amount\": 10,\n  \"currency\": \"USDT\",\n  \"destination\": \"TJRyWwFtzThYgBstgex9NL4iuMMryZQkwy\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/withdrawals",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "withdrawals"]
+        }
+      }
+    },
+    {
+      "name": "2. Get Withdrawals",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/v1/withdrawals/{{user_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "withdrawals", "{{user_id}}"]
+        }
+      }
+    },
+    {
+      "name": "3. Confirm Withdrawal",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/v1/withdrawals/{{withdrawal_id}}/confirm",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "withdrawals", "{{withdrawal_id}}", "confirm"]
+        }
+      }
+    }
+  ]
+}
