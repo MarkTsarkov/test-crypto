@@ -2,80 +2,220 @@ package repo
 
 import (
 	"context"
-	"fmt"
-	"log"
-	"strings"
-	"time"
-
-	"github.com/jackc/pgx/v4/pgxpool"
+	"errors"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/marktsarkov/test/errs"
+	"github.com/marktsarkov/test/logger"
 	"github.com/marktsarkov/test/model"
+	"github.com/marktsarkov/test/txManager"
+	"hash/fnv"
 )
 
 type repo struct {
 	db *pgxpool.Pool
 }
 
-func NewClickRepo(db *pgxpool.Pool) Irepo {
+func NewRepo(db *pgxpool.Pool) Irepo {
 	return &repo{db: db}
 }
 
-func (r *repo) SaveClicks(ctx context.Context, data map[model.Click]int) error {
-	var (
-		placeholders []string
-		args         []interface{}
-	)
-	elemId := 1
-	for click, count := range data {
-		placeholders = append(placeholders,
-			fmt.Sprintf("($%d, $%d, $%d)", elemId, elemId+1, elemId+2))
-		args = append(args, click.BannerID, click.Ts, count)
-		elemId += 3
-	}
-
-	queryAdd := fmt.Sprintf(`
-		INSERT INTO click_stats (banner_id, ts, count) VALUES 
-		%s ON CONFLICT (banner_id, ts) 
-		DO UPDATE SET count = click_stats.count + EXCLUDED.count;`,
-		strings.Join(placeholders, ", "))
-
-	result, err := r.db.Exec(ctx, queryAdd, args...)
+func (r *repo) LockIdempotency(ctx context.Context, key uuid.UUID, userID uuid.UUID) error {
+	db, err := getDB(ctx)
 	if err != nil {
-		log.Printf("error while db exec: %v", err)
 		return err
 	}
-	rowsAffected := result.RowsAffected()
-	log.Printf("rows affected: %d\n", rowsAffected)
+
+	lockID := hashKey(key.String(), userID.String())
+
+	_, err = db.Exec(ctx,
+		`SELECT pg_advisory_xact_lock($1)`,
+		lockID,
+	)
+	if err != nil {
+		logger.Fail("error: ", err)
+		return err
+	}
 	return nil
 }
 
-func (r *repo) GetStats(ctx context.Context, bannerID int, tsFrom, tsTo time.Time) ([]model.ClickStat, error) {
-	query := `
-		SELECT banner_id, ts, count 
-		FROM click_stats 
-		WHERE banner_id = $1 
-		AND ts >= $2 
-		AND ts <= $3 
-		ORDER BY ts ASC`
-
-	rows, err := r.db.Query(ctx, query, bannerID, tsFrom, tsTo)
+func (r *repo) CheckIdempotency(ctx context.Context, withdrawal *model.Withdrawal) ([]byte, error) {
+	db, err := getDB(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query stats: %w", err)
+		return nil, err
+	}
+
+	var status string
+	var storedHash string
+	var response []byte
+
+	key := withdrawal.IdempotencyKey.String()
+	userID := withdrawal.UserID.String()
+	hash := withdrawal.HashedBody
+
+	err = db.QueryRow(ctx,
+		`SELECT status, request_hash, response 
+			 FROM idempotency_keys
+			 WHERE key=$1 AND user_id=$2
+			 FOR UPDATE`,
+		withdrawal.IdempotencyKey.String(), withdrawal.UserID.String(),
+	).Scan(&status, &storedHash, &response)
+
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.Fail("error: ", err)
+		return nil, err
+	}
+
+	if storedHash != "" {
+		if storedHash == hash {
+			return response, nil
+		} else if storedHash != hash {
+			return nil, errs.ErrUnprocessableEntity
+		}
+	}
+	_, err = db.Exec(ctx,
+		`INSERT INTO idempotency_keys
+			 (key,user_id,request_hash,status)
+			 VALUES ($1,$2,$3,'pending')
+			 ON CONFLICT DO NOTHING`,
+		key, userID, hash)
+	if err != nil {
+		logger.Fail("error: ", err)
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (r *repo) CheckBalance(ctx context.Context, withdrawal *model.Withdrawal) (int, error) {
+	db, err := getDB(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var userBalance int
+	err = db.QueryRow(ctx, `SELECT amount 
+		FROM users_balances
+		WHERE user_id=$1 AND currency=$2`,
+		withdrawal.UserID, withdrawal.Currency).Scan(&userBalance)
+	if err != nil {
+		logger.Fail("error: ", err)
+		return 0, err
+	}
+	return userBalance, nil
+}
+
+func (r *repo) CreateWithdrawal(ctx context.Context, w *model.Withdrawal) (*model.Withdrawal, error) {
+	var result model.Withdrawal
+	var operationID uuid.UUID
+
+	db, err := getDB(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = db.QueryRow(ctx,
+		`INSERT INTO withdrawals (user_id, amount, currency, destination, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING operation_id, user_id, amount, currency, destination, idempotency_key`,
+		w.UserID, w.Amount, w.Currency, w.Destination, w.IdempotencyKey,
+	).Scan(&operationID, &result.UserID, &result.Amount, &result.Currency, &result.Destination, &result.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+
+	result.OperationID = operationID
+	return &result, nil
+}
+
+func (r *repo) SaveResponse(ctx context.Context, response []byte, withdrawal *model.Withdrawal) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE idempotency_keys 
+			SET response=($1)
+			WHERE key=($2) AND user_id=($3)`,
+		response, withdrawal.IdempotencyKey, withdrawal.UserID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *repo) GetWithdrawals(ctx context.Context, id uuid.UUID) ([]model.Withdrawal, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT operation_id, user_id, amount, currency, destination, idempotency_key, status, created_at
+		 FROM withdrawals
+		 WHERE user_id = $1`,
+		id,
+	)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
-	var stats []model.ClickStat
+	var results []model.Withdrawal
 	for rows.Next() {
-		var stat model.ClickStat
-		err := rows.Scan(&stat.BannerID, &stat.Ts, &stat.Count)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
+		var w model.Withdrawal
+		var operationID uuid.UUID
+		if err := rows.Scan(&operationID, &w.UserID, &w.Amount, &w.Currency, &w.Destination, &w.IdempotencyKey, &w.Status, &w.CreatedAt); err != nil {
+			return nil, err
 		}
-		stats = append(stats, stat)
+		w.OperationID = operationID
+		results = append(results, w)
 	}
-
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating rows: %w", err)
+		return nil, err
 	}
 
-	return stats, nil
+	return results, nil
+}
+
+func (r *repo) ConfirmWithdrawal(ctx context.Context, operationID uuid.UUID) (*model.Withdrawal, error) {
+	result := &model.Withdrawal{}
+	var opID uuid.UUID
+
+	err := r.db.QueryRow(ctx,
+		`UPDATE withdrawals
+		 SET status = 'complete'
+		 WHERE operation_id = $1 AND status = 'pending'
+		 RETURNING operation_id, status`,
+		operationID,
+	).Scan(&opID, &result.Status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errs.ErrNotFound
+		}
+		return nil, err
+	}
+
+	result.OperationID = opID
+	return result, nil
+}
+
+func (r *repo) SaveLedger(ctx context.Context, operationID uuid.UUID) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO ledger_entries (operation_id, user_id, amount, currency)
+		 SELECT operation_id, user_id, amount, currency
+		 FROM withdrawals
+		 WHERE operation_id = $1`,
+		operationID,
+	)
+	if err != nil {
+		logger.Fail("error: ", err)
+		return err
+	}
+	return nil
+}
+
+func getDB(ctx context.Context) (DBTX, error) {
+	tx, ok := ctx.Value(txManager.TxKey).(pgx.Tx)
+	if !ok {
+		return nil, errors.New("transaction manager not found in context")
+	}
+	return tx, nil
+}
+
+func hashKey(key string, userID string) int64 {
+	h := fnv.New64a()
+	h.Write([]byte(key))
+	h.Write([]byte(userID))
+	return int64(h.Sum64())
 }

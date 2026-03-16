@@ -2,13 +2,13 @@ package service
 
 import (
 	"context"
+	"github.com/google/uuid"
 	"github.com/marktsarkov/test/model"
-	"time"
 )
 
 type Iservice interface {
-	SaveClick(bannerID int) error
-	GetStats(ctx context.Context, bannerID int, tsFrom, tsTo time.Time) (data []model.ClickStat, err error)
-	ParallelSender(ctx context.Context)
-	Close(ctx context.Context)
+	CreateWithdrawal(ctx context.Context, withdrawal *model.Withdrawal) (*model.Withdrawal, []byte, error)
+	GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]model.Withdrawal, error)
+	ConfirmWithdrawal(ctx context.Context, operationID uuid.UUID) (*model.Withdrawal, error)
+	SaveResponse(ctx context.Context, response []byte, withdrawal *model.Withdrawal) error
 }

@@ -1,19 +1,19 @@
 package model
 
-import "time"
+import (
+	"time"
 
-type Banner struct {
-	ID   int    `db:"id" json:"id"`
-	Name string `db:"name" json:"name"`
-}
+	"github.com/google/uuid"
+)
 
-type Click struct {
-	BannerID int
-	Ts       time.Time
-}
-
-type ClickStat struct {
-	BannerID int       `db:"banner_id" json:"banner_id"`
-	Ts       time.Time `db:"ts" json:"ts"`
-	Count    int       `db:"count" json:"count"`
+type Withdrawal struct {
+	UserID         uuid.UUID
+	Amount         int
+	Currency       string
+	Destination    string
+	OperationID    uuid.UUID
+	Status         string
+	IdempotencyKey uuid.UUID
+	HashedBody     string
+	CreatedAt      time.Time
 }

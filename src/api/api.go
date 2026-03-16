@@ -1,71 +1,150 @@
 package api
 
 import (
-	"fmt"
-	"strconv"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"time"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
+	"github.com/marktsarkov/test/errs"
+	"github.com/marktsarkov/test/logger"
+	"github.com/marktsarkov/test/model"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/marktsarkov/test/service"
 )
 
-func saveClick(service service.Iservice) func(c *fiber.Ctx) error {
+func createWithdrawal(service service.Iservice, validator *validator.Validate) func(c *fiber.Ctx) error {
 	return func(c *fiber.Ctx) error {
-		bannerIDStr := c.Params("bannerID")
-		bannerID, err := strconv.Atoi(bannerIDStr)
-		if err != nil {
-			return c.Status(400).SendString(fmt.Sprintf("invalid banner id: %d, bannerIDStr:%s", bannerID, bannerIDStr))
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		idempotencyKey := c.Get("Idempotency-Key")
+		if idempotencyKey == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "Idempotency-Key is required")
 		}
-		err = service.SaveClick(bannerID)
+		key, err := uuid.Parse(idempotencyKey)
 		if err != nil {
-			return c.Status(500).SendString(err.Error())
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusUnprocessableEntity, "Wrong Idempotency-Key")
 		}
-		return c.SendString("ok")
+
+		body := c.Body()
+		var req WithdrawalRequest
+		err = json.Unmarshal(body, &req)
+		if err != nil {
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusBadRequest)
+		}
+		if err = validator.Struct(req); err != nil {
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+
+		userID, err := uuid.Parse(req.UserID)
+		if err != nil {
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusInternalServerError)
+		}
+
+		withdrawal := model.Withdrawal{
+			UserID:         userID,
+			Amount:         req.Amount,
+			Currency:       req.Currency,
+			Destination:    req.Destination,
+			IdempotencyKey: key,
+			HashedBody:     hashBody(body),
+		}
+
+		withdrawalResult, oldResponse, err := service.CreateWithdrawal(ctx, &withdrawal)
+		if err != nil {
+			logger.Fail("error:", err)
+			if errors.Is(err, errs.ErrPureBalance) {
+				return fiber.NewError(fiber.StatusConflict)
+			}
+			if errors.Is(err, errs.ErrUnprocessableEntity) {
+				return fiber.NewError(fiber.StatusUnprocessableEntity)
+			}
+			return fiber.NewError(fiber.StatusInternalServerError)
+		}
+		if oldResponse != nil {
+			return c.Send(oldResponse)
+		}
+		resp := withdrawalToResponse(*withdrawalResult)
+
+		respToSave, err := json.Marshal(resp)
+		if err != nil {
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusInternalServerError)
+		}
+		err = service.SaveResponse(ctx, respToSave, withdrawalResult)
+		if err != nil {
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusInternalServerError)
+		}
+
+		return c.JSON(resp)
 	}
 }
 
-func getStats(service service.Iservice) func(c *fiber.Ctx) error {
+func confirmWithdrawal(service service.Iservice) func(c *fiber.Ctx) error {
 	return func(c *fiber.Ctx) error {
-		bannerIDStr := c.Params("bannerID")
-		bannerID, err := strconv.Atoi(bannerIDStr)
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		operationID, err := uuid.Parse(c.Params("id"))
 		if err != nil {
-			return c.Status(400).SendString(fmt.Sprintf("invalid banner id: %s", bannerIDStr))
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusBadRequest, "invalid operation id")
 		}
 
-		var requestBody struct {
-			From string `json:"from"`
-			To   string `json:"to"`
-		}
-		if err := c.BodyParser(&requestBody); err != nil {
-			return c.Status(400).SendString(fmt.Sprintf("invalid request body: %v", err))
-		}
-		tsFrom, err := time.Parse("2006-01-02T15:04:05", requestBody.From)
+		result, err := service.ConfirmWithdrawal(ctx, operationID)
 		if err != nil {
-			return c.Status(400).SendString(fmt.Sprintf("invalid 'from' date format: %v", err))
-		}
-		tsTo, err := time.Parse("2006-01-02T15:04:05", requestBody.To)
-		if err != nil {
-			return c.Status(400).SendString(fmt.Sprintf("invalid 'to' date format: %v", err))
+			if errors.Is(err, errs.ErrNotFound) {
+				return fiber.NewError(fiber.StatusNotFound, "withdrawal not found")
+			}
+			if errors.Is(err, errs.ErrWrongStatus) {
+				return fiber.NewError(fiber.StatusConflict, "withdrawal is not in pending status")
+			}
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusInternalServerError)
 		}
 
-		stats, err := service.GetStats(c.Context(), bannerID, tsFrom, tsTo)
-		if err != nil {
-			return c.Status(500).SendString(fmt.Sprintf("failed to get stats: %v", err))
-		}
-
-		type StatResponse struct {
-			Ts string `json:"ts"`
-			V  int    `json:"v"`
-		}
-		var response struct {
-			Stats []StatResponse `json:"stats"`
-		}
-		for _, stat := range stats {
-			response.Stats = append(response.Stats, StatResponse{
-				Ts: stat.Ts.Format("2006-01-02T15:04:05"),
-				V:  stat.Count,
-			})
-		}
-		return c.JSON(response)
+		resp := confirmWithdrawalToResponse(*result)
+		return c.JSON(resp)
 	}
+}
+
+func getWithdrawal(service service.Iservice) func(c *fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		userID, err := uuid.Parse(c.Params("id"))
+		if err != nil {
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusBadRequest)
+		}
+
+		withdrawals, err := service.GetWithdrawals(ctx, userID)
+		if err != nil {
+			logger.Fail("error:", err)
+			return fiber.NewError(fiber.StatusInternalServerError)
+		}
+
+		resp := make([]WithdrawalResponse, 0, len(withdrawals))
+		for _, w := range withdrawals {
+			resp = append(resp, withdrawalToResponse(w))
+		}
+		return c.JSON(resp)
+	}
+}
+
+func hashBody(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }
